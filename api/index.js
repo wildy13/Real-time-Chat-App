@@ -25,9 +25,9 @@ fastify.register(fastifyCors);
 fastify.register(fastifyJwt, { secret: process.env.SESSION_KEY, sign: { expiresIn: '8h' } });
 fastify.register(fastifySocketIO, {
     cors: {
-      origin: 'http://190.1.6.248:4000',
+        origin: 'http://190.1.6.248:4000',
     },
-  });
+});
 
 fastify.addHook('onRequest', async (req, res) => {
     try {
@@ -46,57 +46,82 @@ fastify.register(messages, { prefix: '/api/messages' });
 
 fastify.ready((err) => {
     if (err) throw err;
-  
+
     fastify.io.on('connect', (socket) => {
-      console.info('Socket connected!', socket.id);
-  
-      socket.on('disconnect', () => {
-        console.log('user disconnected');
-      });
-  
-      socket.on('chat:list', async (callback) => {
-        const messages = await Messages.findById('MrIy9CD9ESb9')
-        .populate({
-            path: 'content',
-            populate: {
-                path: 'sender',
-                select: '-password'
-            },
-        })
-        .populate({
-            path: 'content',
-            populate: {
-                path: 'recipient',
-                select: '-password'
-            },
+        console.info('Socket connected!', socket.id);
+        socket.on('disconnect', () => {
+            console.log('user disconnected');
         });
-        callback({ data: messages.content });
-      });
-  
-      socket.on('chat:create', async (data) => {
-        const messages = await Messages.findById('MrIy9CD9ESb9');
-        messages.content.push(data);        
-        await messages.save();
-        await messages.populate({
-            path: 'content',
-            populate: {
-                path: 'sender',
-                select: '-password'
-            },
+
+        socket.on('chat:list', async (callback) => {
+            const messages = await Messages.find()
+                .populate({
+                    path: 'content',
+                    populate: {
+                        path: 'sender',
+                        select: '-password'
+                    },
+                })
+                .populate({
+                    path: 'content',
+                    populate: {
+                        path: 'recipient',
+                        select: '-password'
+                    },
+                });
+                await Promise.all(
+                    messages.map(async(val) => {
+                        callback({ data: val });
+                    })
+                )
         });
-        await messages.populate({
-            path: 'content',
-            populate: {
-                path: 'recipient',
-                select: '-password'
-            },
+
+        socket.on('chat:create', async (data) => {
+            const { sender, recipient, msg } = data;
+
+            try {
+                const messageDocument = await Messages.findOne({
+                    group: sender
+                });
+
+                if (!messageDocument) {
+                    messageDocument = new Messages({
+                        group: [sender, recipient],
+                        content: [{ sender, recipient, msg }]
+                    });
+                } else {
+                    messageDocument.content.push({ sender, recipient, msg });
+                }
+
+                const savedMessageDocument = await messageDocument.save();
+                await messageDocument.populate({
+                    path: 'content',
+                    populate: {
+                        path: 'sender',
+                        select: '-password'
+                    },
+                });
+                await messageDocument.populate({
+                    path: 'content',
+                    populate: {
+                        path: 'recipient',
+                        select: '-password'
+                    },
+                });
+
+                socket.to('room_user_' + recipient).emit('chat:create', savedMessageDocument);
+
+                const saved = messageDocument.content[messageDocument.content.length - 1]
+                socket.broadcast.emit('chat:create', saved);
+                socket.emit('chat:create', saved);
+
+            } catch (error) {
+                console.error('Error creating or updating message document:', error);
+            }
         });
-        const saved = messages.content[messages.content.length - 1]
-        socket.broadcast.emit('chat:create', saved);
-        socket.emit('chat:create', saved);
-      });
+
     });
-  });
+});
 
 const connector = async () => {
     try {
